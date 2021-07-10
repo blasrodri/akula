@@ -8,53 +8,84 @@ use crate::{
 };
 use std::collections::{HashMap, BTreeMap, BTreeSet};
 use thiserror::Error;
+use akula_table_defs::{TABLES, TableInfo};
 
 #[derive(Debug, Error)]
 enum MutationError {
     #[error("Table not found.")]
     TableNotFound,
     #[error("Wrong type of table (dupsort vs. Non-dupsort)")]
-    WrongTable
+    WrongTable,
 }
 
 type TableName = string::String<static_bytes::Bytes>;
-type DupSortValues = BTreeSet<Vec<u8>>;
-type DupSortBucket = BTreeMap<Vec<u8>, DupSortValues>;
 type SimpleBucket = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
+type SimpleBuffer = HashMap<TableName, SimpleBucket>;
+type DupSortValues = BTreeSet<Vec<u8>>;
 
-enum Bucket {
-    Simple(SimpleBucket),
-    DupSort(DupSortBucket, DupSortBucket),
+#[derive(Default)]
+struct DupSortBucket {
+    insert: DupSortValues,
+    delete: DupSortValues,
+}
+
+type DupSortBuffer = HashMap<TableName, DupSortBucket>;
+
+fn init_buffers() -> (HashMap<TableName, SimpleBucket>, HashMap<TableName, DupSortBucket>) {
+    let mut simple_buffer = SimpleBuffer::default();
+    let mut dupsort_buffer = DupSortBuffer::default();
+
+    for (table_name, info) in TABLES {
+        if info.dupsort.is_some() {
+            dupsort_buffer.insert(table_name, Default::default());
+        } else {
+            simple_buffer.insert(table_name, Default::default());
+        }
+    }
+
+    (simple_buffer, dupsort_buffer)
 }
 
 struct Mutation<'tx, Tx: MutableTransaction<'tx>> {
     parent: &'tx mut Tx,
-    buffer: HashMap<TableName, Bucket>,
+    simple_buffer: HashMap<TableName, SimpleBucket>,
+    dupsort_buffer: HashMap<TableName, DupSortBucket>,
     sequence_increment: HashMap<TableName, u64>,
 }
 
 impl<'tx, Tx: MutableTransaction<'tx>> Mutation<'tx, Tx> {
+    fn new(parent: &'tx mut Tx) -> Self {
+        let (simple_buffer, dupsort_buffer) = init_buffers();
+        Mutation {
+            parent,
+            simple_buffer,
+            dupsort_buffer,
+            sequence_increment: Default::default(),
+        }
+    }
+
     async fn get<T>(&'tx self, table: &T, key: &[u8]) -> Result<Option<Bytes<'tx>>>
     where
         T: Table,
     {
-        let bucket = self.buffer
-            .get(&table.db_name())
-            .ok_or(MutationError::TableNotFound)?;
+        let table_name = table.db_name();
 
-        match bucket {
-            Bucket::Simple(mutate) => {
-                Ok(match mutate.get(key) {
-                    Some(entry) => match entry {
-                        Some(value) => Some(value.as_slice().into()),
-                        None => None,
-                    }
-                    None => self.parent.get(table, key).await?
-                })
-            },
-            Bucket::DupSort(insert, delete) => {
-                todo!()
-            }
+        if let Some(bucket) = self.simple_buffer.get(&table_name) {
+            Ok(match bucket.get(key) {
+                Some(entry) => match entry {
+                    Some(value) => Some(value.as_slice().into()),
+                    None => None,
+                }
+                None => self.parent.get(table, key).await?
+            })
+        }
+
+        else if let Some(bucket) = self.dupsort_buffer.get(&table_name) {
+            todo!()
+        }
+
+        else {
+            Err(MutationError::TableNotFound.into())
         }
 
     }
@@ -74,56 +105,62 @@ impl<'tx, Tx: MutableTransaction<'tx>> Mutation<'tx, Tx> {
     where
         T: Table,
     {
-        let bucket = self.buffer
-            .get_mut(&table.db_name())
-            .ok_or(MutationError::TableNotFound)?;
+        let table_name = table.db_name();
 
-        match bucket {
-            Bucket::Simple(mutate) => mutate.insert(k.to_vec(), Some(v.to_vec())),
-            Bucket::DupSort(insert, _) => todo!(),
-        };
+        if let Some(bucket) = self.simple_buffer.get_mut(&table_name) {
+            bucket.insert(k.to_vec(), Some(v.to_vec()))
+            Ok(())
+        }
 
-        Ok(())
+        else if let Some(bucket) = self.dupsort_buffer.get_mut(&table_name) {
+            todo!();
+            Ok(())
+        }
+
+        else {
+            Err(MutationError::TableNotFound.into())
+        }
     }
 
     async fn del<T>(&mut self, table: &T, k: &[u8]) -> Result<()>
     where
         T: Table,
     {
-        let bucket = self.buffer
-            .get_mut(&table.db_name())
-            .ok_or(MutationError::TableNotFound)?;
+        let table_name = table.db_name();
 
-        match bucket {
-            Bucket::Simple(simple_bucket) => {
-                simple_bucket.insert(k.to_vec(), None);
-                Ok(())
-            },
-            Bucket::DupSort(_, _) => Err(MutationError::WrongTable.into())
+        if let Some(bucket) = self.simple_buffer.get_mut(&table_name) {
+            bucket.insert(k.to_vec(), None);
+            Ok(())
+        }
+
+        else if let Some(bucket) = self.dupsort_buffer.get_mut(&table_name) {
+            todo!();
+            Ok(())
+        }
+
+        else {
+            Err(MutationError::TableNotFound.into())
         }
     }
 
     async fn commit(self) -> anyhow::Result<()> {
-        for (table_name, bucket) in self.buffer {
+        for (table_name, bucket) in self.simple_buffer {
             let table = CustomTable { 0: table_name };
             let mut cursor = self.parent.mutable_cursor(&table).await?;
-            match bucket {
-                Bucket::Simple(simple_bucket) => {
-                    for (ref key, ref maybe_value) in simple_bucket {
-                        match maybe_value {
-                            Some(ref value) => cursor.put(key, value).await?,
-                            None => {
-                                let maybe_deleted_pair = cursor.seek_exact(key).await?;
-                                if let Some((ref key, ref value)) = maybe_deleted_pair {
-                                    cursor.delete(key, value).await?;
-                                }
-                            }
-                        };
+            for (ref key, ref maybe_value) in bucket {
+                match maybe_value {
+                    Some(ref value) => cursor.put(key, value).await?,
+                    None => {
+                        let maybe_deleted_pair = cursor.seek_exact(key).await?;
+                        if let Some((ref key, ref value)) = maybe_deleted_pair {
+                            cursor.delete(key, value).await?;
+                        }
                     }
-                },
-                Bucket::DupSort(_, _) => todo!()
+                };
             }
         }
+
+        // TODO: dupsort buckets
 
         for (table_name, increment) in self.sequence_increment {
             if increment > 0 {
