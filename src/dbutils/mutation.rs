@@ -3,10 +3,9 @@ use bytes::Bytes;
 use crate::{
     kv::traits::{Cursor, MutableCursor},
     kv::{CustomTable, Table},
-    Transaction,
     MutableTransaction
 };
-use std::collections::{HashMap, BTreeMap, BTreeSet};
+use std::{collections::{HashMap, BTreeMap, BTreeSet}, ops::Deref};
 use thiserror::Error;
 use akula_table_defs::{TABLES, TableInfo};
 
@@ -35,11 +34,11 @@ fn init_buffers() -> (HashMap<TableName, SimpleBucket>, HashMap<TableName, DupSo
     let mut simple_buffer = SimpleBuffer::default();
     let mut dupsort_buffer = DupSortBuffer::default();
 
-    for (table_name, info) in TABLES {
-        if info.dupsort.is_some() {
-            dupsort_buffer.insert(table_name, Default::default());
+    for (table_name, info) in TABLES.deref() {
+        if info.dup_sort.is_some() {
+            dupsort_buffer.insert(TableName::from_str(table_name), Default::default());
         } else {
-            simple_buffer.insert(table_name, Default::default());
+            simple_buffer.insert(TableName::from_str(table_name), Default::default());
         }
     }
 
@@ -108,7 +107,7 @@ impl<'tx, Tx: MutableTransaction<'tx>> Mutation<'tx, Tx> {
         let table_name = table.db_name();
 
         if let Some(bucket) = self.simple_buffer.get_mut(&table_name) {
-            bucket.insert(k.to_vec(), Some(v.to_vec()))
+            bucket.insert(k.to_vec(), Some(v.to_vec()));
             Ok(())
         }
 
@@ -122,7 +121,7 @@ impl<'tx, Tx: MutableTransaction<'tx>> Mutation<'tx, Tx> {
         }
     }
 
-    async fn del<T>(&mut self, table: &T, k: &[u8]) -> Result<()>
+    async fn delete_key<T>(&mut self, table: &T, k: &[u8]) -> Result<()>
     where
         T: Table,
     {
@@ -130,6 +129,33 @@ impl<'tx, Tx: MutableTransaction<'tx>> Mutation<'tx, Tx> {
 
         if let Some(bucket) = self.simple_buffer.get_mut(&table_name) {
             bucket.insert(k.to_vec(), None);
+            Ok(())
+        }
+
+        else if let Some(bucket) = self.dupsort_buffer.get_mut(&table_name) {
+            todo!();
+            Ok(())
+        }
+
+        else {
+            Err(MutationError::TableNotFound.into())
+        }
+    }
+
+    async fn delete_pair<T>(&mut self, table: &T, k: &[u8], v: &[u8]) -> Result<()>
+    where
+        T: Table,
+    {
+        let table_name = table.db_name();
+
+        if let Some(bucket) = self.simple_buffer.get_mut(&table_name) {
+            if let Some(value_or_none) = bucket.get(k) {
+                if let Some(value) = value_or_none {
+                    if value == v {
+                        bucket.insert(k.to_vec(), None);
+                    }
+                }
+            }
             Ok(())
         }
 
