@@ -1,7 +1,8 @@
 use crate::{
     bitmapdb,
     changeset::{AccountHistory, Change, HistoryKind, StorageHistory},
-    common, dbutils,
+    common::{self, EMPTY_HASH},
+    dbutils,
     kv::tables,
     models::Account,
     ChangeSet, MutableCursor, MutableCursorDupSort, MutableTransaction,
@@ -36,7 +37,7 @@ pub trait StateReader<'storage> {
         incarnation: common::Incarnation,
         code_hash: common::Hash,
     ) -> anyhow::Result<usize>;
-    async fn read_account_incarnation(
+    async fn read_previous_incarnation(
         &self,
         address: common::Address,
     ) -> anyhow::Result<Option<u64>>;
@@ -180,7 +181,7 @@ impl<'db: 'tx, 'tx, Tx: MutableTransaction<'db>> StateWriter for ChangeSetWriter
     ) -> anyhow::Result<()> {
         if original != account || self.storage_changed.contains(&address) {
             self.account_changes
-                .insert(address, original.account_data(true));
+                .insert(address, original.encode_for_storage(true).into());
         }
 
         Ok(())
@@ -202,7 +203,7 @@ impl<'db: 'tx, 'tx, Tx: MutableTransaction<'db>> StateWriter for ChangeSetWriter
         original: &Account,
     ) -> anyhow::Result<()> {
         self.account_changes
-            .insert(address, original.account_data(false));
+            .insert(address, original.encode_for_storage(false).into());
 
         Ok(())
     }
@@ -328,17 +329,7 @@ impl<'db: 'tx, 'tx, Tx: MutableTransaction<'db>> WriterWithChangesets
 
 impl Account {
     fn account_data(&self, omit_hashes: bool) -> Bytes<'static> {
-        if !self.initialised {
-            Bytes::new()
-        } else {
-            let mut acc = self.clone();
-            if omit_hashes {
-                acc.code_hash = None;
-                acc.root = None;
-            }
-
-            acc.encode_for_storage().into()
-        }
+        self.encode_for_storage(omit_hashes).into()
     }
 }
 
@@ -370,7 +361,7 @@ impl<'db: 'tx, 'tx, Tx: MutableTransaction<'db>> StateWriter for PlainStateWrite
             .update_account_data(address, original, account)
             .await?;
 
-        let value = account.encode_for_storage();
+        let value = account.encode_for_storage(false);
 
         self.tx
             .set(&tables::PlainState, address.as_bytes(), &value)
@@ -534,7 +525,7 @@ impl<'db: 'tx, 'tx, Tx: MutableTransaction<'db>> StateReader<'tx>
             .unwrap_or(0))
     }
 
-    async fn read_account_incarnation(
+    async fn read_previous_incarnation(
         &self,
         address: common::Address,
     ) -> anyhow::Result<Option<u64>> {

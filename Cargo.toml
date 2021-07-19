@@ -21,12 +21,14 @@ bytesize = "1"
 clap = "2"
 console-subscriber = { git = "https://github.com/tokio-rs/console" }
 const_format = "0.2"
+derive_more = "0.99"
 ethereum = { git = "https://github.com/rust-blockchain/ethereum" }
 ethereum-interfaces = { git = "https://github.com/ledgerwatch/interfaces", features = [
     "remotekv",
     "sentry",
 ] }
 ethereum-types = "0.12"
+evmodin = { git = "https://github.com/vorot93/evmodin" }
 futures-core = "0.3"
 futures-util = "0.3"
 hex = "0.4"

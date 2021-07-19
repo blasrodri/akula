@@ -176,11 +176,11 @@ pub mod tx_sender {
             let mut cursor = tx.cursor(&tables::TxSender).await?;
 
             let start_key = base_tx_id.to_be_bytes();
-            txdb::walk(&mut cursor, &start_key, 0)
-                .take(amount as usize)
-                .map(|res| res.map(|(_, address_bytes)| Address::from_slice(&*address_bytes)))
-                .collect::<anyhow::Result<Vec<_>>>()
+            txdb::get_n(&mut cursor, &start_key, 0, amount as usize)
                 .await?
+                .into_iter()
+                .map(|(_, address_bytes)| Address::from_slice(&*address_bytes))
+                .collect()
         } else {
             vec![]
         })

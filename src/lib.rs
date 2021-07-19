@@ -1,6 +1,7 @@
 #![feature(
     bool_to_option,
     destructuring_assignment,
+    entry_insert,
     generic_associated_types,
     never_type,
     type_alias_impl_trait
