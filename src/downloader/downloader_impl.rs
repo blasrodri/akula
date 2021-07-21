@@ -1,15 +1,17 @@
 use crate::downloader::{
-    block_id,
     chain_config::{ChainConfig, ChainsConfig},
-    messages::{EthMessageId, GetBlockHeadersMessage, GetBlockHeadersMessageParams, Message},
+    headers::{
+        fetch_receive_stage::FetchReceiveStage, fetch_request_stage::FetchRequestStage,
+        header_slices::HeaderSlices, save_stage::SaveStage, verify_stage::VerifyStage,
+    },
     opts::Opts,
     sentry_client,
-    sentry_client::{PeerFilter, SentryClient},
+    sentry_client::SentryClient,
     sentry_client_impl::SentryClientImpl,
     sentry_client_reactor::SentryClientReactor,
 };
-use tokio_stream::StreamExt;
-use tracing::*;
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 pub struct Downloader {
     opts: Opts,
@@ -41,26 +43,67 @@ impl Downloader {
 
         sentry_client.set_status(status).await?;
 
-        let mut sentry = SentryClientReactor::new(sentry_client);
-        sentry.start();
+        let mut sentry_reactor = SentryClientReactor::new(sentry_client);
+        sentry_reactor.start();
 
-        let message = Message::GetBlockHeaders(GetBlockHeadersMessage {
-            request_id: 1,
-            params: GetBlockHeadersMessageParams {
-                start_block: block_id::BlockId::Number(123),
-                limit: 5,
-                skip: 0,
-                reverse: 0,
-            },
-        });
-        sentry.send_message(message, PeerFilter::All).await?;
+        let header_slices = Arc::new(HeaderSlices::new(50 << 20 /* 50 Mb */));
+        let sentry = Arc::new(RwLock::new(sentry_reactor));
 
-        let mut stream = sentry.receive_messages(EthMessageId::BlockHeaders)?;
-        while let Some(message) = stream.next().await {
-            info!("incoming message: {:?}", message.eth_id());
+        let fetch_request_stage =
+            FetchRequestStage::new(Arc::clone(&header_slices), Arc::clone(&sentry));
+
+        let fetch_receive_stage =
+            FetchReceiveStage::new(Arc::clone(&header_slices), Arc::clone(&sentry));
+
+        let fetch_receive_stage_execute = fetch_receive_stage.execute();
+        tokio::pin!(fetch_receive_stage_execute);
+
+        let verify_stage = VerifyStage::new(Arc::clone(&header_slices));
+
+        let save_stage = SaveStage::new(Arc::clone(&header_slices));
+
+        loop {
+            tokio::select! {
+                result = fetch_request_stage.execute() => {
+                    if result.is_err() {
+                        tracing::error!("Downloader headers fetch request stage failure: {:?}", result);
+                        break;
+                    }
+                }
+                result = &mut fetch_receive_stage_execute => {
+                    if result.is_err() {
+                        tracing::error!("Downloader headers fetch receive stage failure: {:?}", result);
+                        break;
+                    }
+                }
+                else => {
+                    break;
+                }
+            }
+
+            // TODO: async?
+            let result = verify_stage.execute();
+            if result.is_err() {
+                tracing::error!("Downloader headers verify stage failure: {:?}", result);
+                break;
+            }
+
+            // TODO: async in the loop above?
+            let result = save_stage.execute().await;
+            if result.is_err() {
+                tracing::error!("Downloader headers save stage failure: {:?}", result);
+                break;
+            }
+
+            if !fetch_receive_stage.can_proceed() {
+                break;
+            }
         }
 
-        sentry.stop().await?;
+        {
+            let mut sentry_reactor = sentry.write();
+            sentry_reactor.stop().await?;
+        }
 
         Ok(())
     }
