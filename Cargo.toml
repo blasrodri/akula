@@ -27,6 +27,7 @@ ethereum-interfaces = { git = "https://github.com/ledgerwatch/interfaces", featu
     "sentry",
 ] }
 ethereum-types = "0.12"
+crossterm = { version = "0.20", optional = true }
 futures-core = "0.3"
 futures-util = "0.3"
 hex = "0.4"
