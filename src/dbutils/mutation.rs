@@ -158,7 +158,9 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
         let table_name = table.db_name();
 
         if is_dupsort(&table_name) {
-            todo!();
+            let mut changes = self.get_dupsort_changes(&table_name, k);
+            changes.insert.remove(v);
+            changes.delete.insert(v.to_vec());
         }
 
         else {
@@ -192,7 +194,18 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
             }
         }
 
-        // TODO: dupsort buckets
+        for (table_name, bucket) in self.dupsort_buffer {
+            let table = CustomTable { 0: table_name };
+            let mut cursor = self.parent.mutable_cursor(&table).await?;
+            for(ref key, ref changes) in bucket {
+                for ref value in &changes.delete {
+                    cursor.delete(key, value).await?
+                }
+                for ref value in &changes.insert {
+                    cursor.put(key, value).await?
+                }
+            }
+        }
 
         for (table_name, increment) in self.sequence_increment {
             if increment > 0 {
