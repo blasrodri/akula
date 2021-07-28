@@ -1,14 +1,18 @@
+use crate::{
+    kv::{
+        traits::{Cursor, MutableCursor},
+        CustomTable, Table,
+    },
+    MutableTransaction,
+};
+use akula_table_defs::TABLES;
 use anyhow::Result;
 use bytes::Bytes;
-use crate::{
-    kv::traits::{Cursor, MutableCursor},
-    kv::{CustomTable, Table},
-    MutableTransaction
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    marker::PhantomData,
 };
-use std::{collections::{HashMap, BTreeMap, BTreeSet}, ops::Deref};
 use thiserror::Error;
-use akula_table_defs::{TABLES, TableInfo};
-use std::marker::PhantomData;
 
 #[derive(Debug, Error)]
 enum MutationError {
@@ -65,27 +69,19 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
 
         if let Some(bucket) = self.simple_buffer.get(&table_name) {
             Ok(match bucket.get(key) {
-                Some(entry) => match entry {
-                    Some(value) => Some(value.as_slice().into()),
-                    None => None,
-                }
-                None => self.parent.get(table, key).await?
+                Some(entry) => entry.as_ref().map(|value| value.as_slice().into()),
+                None => self.parent.get(table, key).await?,
             })
-        }
-
-        else if let Some(bucket) = self.dupsort_buffer.get(&table_name) {
+        } else if let Some(_bucket) = self.dupsort_buffer.get(&table_name) {
             todo!()
-        }
-
-        else {
+        } else {
             Err(MutationError::TableNotFound.into())
         }
-
     }
 
     async fn read_sequence<T>(&self, table: &T) -> Result<u64>
     where
-        T: Table
+        T: Table,
     {
         let parent_value = self.parent.read_sequence(table).await?;
         let increment = self.sequence_increment.get(&table.db_name()).unwrap_or(&0);
@@ -122,13 +118,12 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
         let table_name = table.db_name();
 
         if is_dupsort(&table_name) {
-            let mut changes = self.get_dupsort_changes(&table_name, k);
+            let changes = self.get_dupsort_changes(&table_name, k);
             changes.insert.insert(v.to_vec());
             changes.delete.remove(v);
-        }
-
-        else {
-            self.get_simple_buffer(&table_name).insert(k.to_vec(), Some(v.to_vec()));
+        } else {
+            self.get_simple_buffer(&table_name)
+                .insert(k.to_vec(), Some(v.to_vec()));
         }
 
         Ok(())
@@ -142,9 +137,7 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
 
         if is_dupsort(&table_name) {
             todo!();
-        }
-
-        else {
+        } else {
             self.get_simple_buffer(&table_name).insert(k.to_vec(), None);
         }
 
@@ -158,18 +151,14 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
         let table_name = table.db_name();
 
         if is_dupsort(&table_name) {
-            let mut changes = self.get_dupsort_changes(&table_name, k);
+            let changes = self.get_dupsort_changes(&table_name, k);
             changes.insert.remove(v);
             changes.delete.insert(v.to_vec());
-        }
-
-        else {
+        } else {
             let bucket = self.get_simple_buffer(&table_name);
-            if let Some(value_or_none) = bucket.get(k) {
-                if let Some(value) = value_or_none {
-                    if value == v {
-                        bucket.insert(k.to_vec(), None);
-                    }
+            if let Some(Some(value)) = bucket.get(k) {
+                if value == v {
+                    bucket.insert(k.to_vec(), None);
                 }
             }
         }
@@ -197,7 +186,7 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
         for (table_name, bucket) in self.dupsort_buffer {
             let table = CustomTable { 0: table_name };
             let mut cursor = self.parent.mutable_cursor(&table).await?;
-            for(ref key, ref changes) in bucket {
+            for (ref key, ref changes) in bucket {
                 for ref value in &changes.delete {
                     cursor.delete(key, value).await?
                 }
@@ -219,7 +208,7 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
 
     async fn increment_sequence<T>(&mut self, table: &T, amount: u64) -> Result<u64>
     where
-        T: Table
+        T: Table,
     {
         let parent_value = self.parent.read_sequence(table).await?;
         let name = table.db_name();
@@ -228,69 +217,143 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
         self.sequence_increment.insert(name, current + amount);
         Ok(current)
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mdbx::{DatabaseFlags, Environment, NoWriteMap, WriteFlags};
     use tempfile::tempdir;
-    use mdbx::{Environment, NoWriteMap, DatabaseFlags, WriteFlags};
 
     #[tokio::test]
     async fn test_mutation() {
         let dir = tempdir().unwrap();
-        let env = Environment::<NoWriteMap>::new().set_max_dbs(2).open(dir.path()).unwrap();
+        let env = Environment::<NoWriteMap>::new()
+            .set_max_dbs(2)
+            .open(dir.path())
+            .unwrap();
         let mut tx = env.begin_rw_txn().unwrap();
         let table = CustomTable::from("TxSender".to_string());
         {
-            let db = tx.create_db(Some("TxSender"), DatabaseFlags::default()).unwrap();
-            tx.put(&db, Bytes::from("a"), Bytes::from("xxx"), Default::default()).unwrap();
-            tx.put(&db, Bytes::from("c"), Bytes::from("zzz"), Default::default()).unwrap();
-            tx.put(&db, Bytes::from("b"), Bytes::from("yyy"), Default::default()).unwrap();
+            let db = tx
+                .create_db(Some("TxSender"), DatabaseFlags::default())
+                .unwrap();
+            tx.put(
+                &db,
+                Bytes::from("a"),
+                Bytes::from("xxx"),
+                Default::default(),
+            )
+            .unwrap();
+            tx.put(
+                &db,
+                Bytes::from("c"),
+                Bytes::from("zzz"),
+                Default::default(),
+            )
+            .unwrap();
+            tx.put(
+                &db,
+                Bytes::from("b"),
+                Bytes::from("yyy"),
+                Default::default(),
+            )
+            .unwrap();
         }
         {
             let ref_tx = &mut tx;
             let mut mutation = Mutation::new(ref_tx);
-            mutation.set(&table, &Bytes::from("a1"), &Bytes::from("aaa")).await.unwrap();
-            mutation.set(&table, &Bytes::from("c"), &Bytes::from("bbb")).await.unwrap();
-            mutation.delete_key(&table, &Bytes::from("b")).await.unwrap();
-            assert_eq!(mutation.get(&table, &Bytes::from("a")).await.unwrap().unwrap(), Bytes::from("xxx"));
-            assert_eq!(mutation.get(&table, &Bytes::from("a1")).await.unwrap().unwrap(), Bytes::from("aaa"));
-            assert!(mutation.get(&table, &Bytes::from("b")).await.unwrap().is_none());
+            mutation
+                .set(&table, &Bytes::from("a1"), &Bytes::from("aaa"))
+                .await
+                .unwrap();
+            mutation
+                .set(&table, &Bytes::from("c"), &Bytes::from("bbb"))
+                .await
+                .unwrap();
+            mutation
+                .delete_key(&table, &Bytes::from("b"))
+                .await
+                .unwrap();
+            assert_eq!(
+                mutation
+                    .get(&table, &Bytes::from("a"))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Bytes::from("xxx")
+            );
+            assert_eq!(
+                mutation
+                    .get(&table, &Bytes::from("a1"))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Bytes::from("aaa")
+            );
+            assert!(mutation
+                .get(&table, &Bytes::from("b"))
+                .await
+                .unwrap()
+                .is_none());
             mutation.commit().await.unwrap();
         }
         {
             let db = tx.open_db(Some("TxSender")).unwrap();
-            assert_eq!(tx.get(&db, &Bytes::from("a")).unwrap().unwrap(), Bytes::from("xxx"));
-            assert_eq!(tx.get(&db, &Bytes::from("a1")).unwrap().unwrap(), Bytes::from("aaa"));
+            assert_eq!(
+                tx.get(&db, &Bytes::from("a")).unwrap().unwrap(),
+                Bytes::from("xxx")
+            );
+            assert_eq!(
+                tx.get(&db, &Bytes::from("a1")).unwrap().unwrap(),
+                Bytes::from("aaa")
+            );
             assert!(tx.get(&db, &Bytes::from("b")).unwrap().is_none());
-            assert_eq!(tx.get(&db, &Bytes::from("c")).unwrap().unwrap(), Bytes::from("bbb"));
+            assert_eq!(
+                tx.get(&db, &Bytes::from("c")).unwrap().unwrap(),
+                Bytes::from("bbb")
+            );
         }
     }
 
     #[tokio::test]
     async fn test_mutation_dupsort() {
         let dir = tempdir().unwrap();
-        let env = Environment::<NoWriteMap>::new().set_max_dbs(2).open(dir.path()).unwrap();
+        let env = Environment::<NoWriteMap>::new()
+            .set_max_dbs(2)
+            .open(dir.path())
+            .unwrap();
         let mut tx = env.begin_rw_txn().unwrap();
         let table_name = "AccountChangeSet".to_string();
         assert!(is_dupsort(&table_name));
         let table = CustomTable::from(table_name.clone());
         let flags = DatabaseFlags::default() | DatabaseFlags::DUP_SORT;
         let db = tx.create_db(Some(&table_name), flags).unwrap();
-        tx.put(&db, Bytes::from("a"), Bytes::from("z"), WriteFlags::default());
+        tx.put(
+            &db,
+            Bytes::from("a"),
+            Bytes::from("z"),
+            WriteFlags::default(),
+        );
         {
             let ref_tx = &mut tx;
             let mut mutation = Mutation::new(ref_tx);
-            mutation.set(&table, &Bytes::from("a"), &Bytes::from("y")).await.unwrap();
-            mutation.delete_pair(&table, &Bytes::from("a"), &Bytes::from("z")).await.unwrap();
+            mutation
+                .set(&table, &Bytes::from("a"), &Bytes::from("y"))
+                .await
+                .unwrap();
+            mutation
+                .delete_pair(&table, &Bytes::from("a"), &Bytes::from("z"))
+                .await
+                .unwrap();
             mutation.commit().await.unwrap();
         }
         {
             let db = tx.open_db(Some(&table_name)).unwrap();
-            assert_eq!(tx.get(&db, &Bytes::from("a")).unwrap().unwrap(), Bytes::from("y"));
+            assert_eq!(
+                tx.get(&db, &Bytes::from("a")).unwrap().unwrap(),
+                Bytes::from("y")
+            );
         }
     }
-
 }
