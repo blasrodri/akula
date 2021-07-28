@@ -235,7 +235,7 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use mdbx::{Environment, NoWriteMap, DatabaseFlags};
+    use mdbx::{Environment, NoWriteMap, DatabaseFlags, WriteFlags};
 
     #[tokio::test]
     async fn test_mutation() {
@@ -264,8 +264,32 @@ mod tests {
             let db = tx.open_db(Some("TxSender")).unwrap();
             assert_eq!(tx.get(&db, &Bytes::from("a")).unwrap().unwrap(), Bytes::from("xxx"));
             assert_eq!(tx.get(&db, &Bytes::from("a1")).unwrap().unwrap(), Bytes::from("aaa"));
-            //assert!(tx.get(&db, &Bytes::from("b")).unwrap().is_none());
+            assert!(tx.get(&db, &Bytes::from("b")).unwrap().is_none());
             assert_eq!(tx.get(&db, &Bytes::from("c")).unwrap().unwrap(), Bytes::from("bbb"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mutation_dupsort() {
+        let dir = tempdir().unwrap();
+        let env = Environment::<NoWriteMap>::new().set_max_dbs(2).open(dir.path()).unwrap();
+        let mut tx = env.begin_rw_txn().unwrap();
+        let table_name = "AccountChangeSet".to_string();
+        assert!(is_dupsort(&table_name));
+        let table = CustomTable::from(table_name.clone());
+        let flags = DatabaseFlags::default() | DatabaseFlags::DUP_SORT;
+        let db = tx.create_db(Some(&table_name), flags).unwrap();
+        tx.put(&db, Bytes::from("a"), Bytes::from("z"), WriteFlags::default());
+        {
+            let ref_tx = &mut tx;
+            let mut mutation = Mutation::new(ref_tx);
+            mutation.set(&table, &Bytes::from("a"), &Bytes::from("y")).await.unwrap();
+            mutation.delete_pair(&table, &Bytes::from("a"), &Bytes::from("z")).await.unwrap();
+            mutation.commit().await.unwrap();
+        }
+        {
+            let db = tx.open_db(Some(&table_name)).unwrap();
+            assert_eq!(tx.get(&db, &Bytes::from("a")).unwrap().unwrap(), Bytes::from("y"));
         }
     }
 
