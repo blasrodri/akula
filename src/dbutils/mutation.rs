@@ -187,10 +187,10 @@ impl<'tx: 'm, 'm, Tx: MutableTransaction<'tx>> Mutation<'tx, 'm, Tx> {
             let table = CustomTable { 0: table_name };
             let mut cursor = self.parent.mutable_cursor(&table).await?;
             for (ref key, ref changes) in bucket {
-                for ref value in &changes.delete {
+                for value in &changes.delete {
                     cursor.delete(key, value).await?
                 }
-                for ref value in &changes.insert {
+                for value in &changes.insert {
                     cursor.put(key, value).await?
                 }
             }
@@ -334,7 +334,8 @@ mod tests {
             Bytes::from("a"),
             Bytes::from("z"),
             WriteFlags::default(),
-        );
+        )
+        .unwrap();
         {
             let ref_tx = &mut tx;
             let mut mutation = Mutation::new(ref_tx);
