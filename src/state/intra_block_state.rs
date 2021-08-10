@@ -9,7 +9,7 @@ use std::collections::*;
 #[derive(Debug)]
 pub struct IntraBlockState<'storage, 'r, R>
 where
-    R: StateReader<'storage>,
+    R: StateBuffer<'storage>,
 {
     db: &'r R,
 
@@ -86,7 +86,7 @@ async fn get_or_create_object<'m, 'storage, 'r, R: StateReader<'storage>>(
     Ok(objects.get_mut(&address).unwrap())
 }
 
-impl<'storage, 'r, R: StateReader<'storage>> IntraBlockState<'storage, 'r, R> {
+impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
     pub fn new(db: &'r R) -> Self {
         Self {
             db,
@@ -136,6 +136,43 @@ impl<'storage, 'r, R: StateReader<'storage>> IntraBlockState<'storage, 'r, R> {
     }
 
     pub async fn create_contract(&mut self, address: Address) -> anyhow::Result<()> {
+        let mut created = Object {
+            current: Some(Account::default()),
+            ..Default::default()
+        };
+
+        let mut prev_incarnation: Option<u64> = None;
+        let prev = get_object(self.db, &mut self.objects, address).await?;
+        if let Some(prev) = prev {
+            created.initial = prev.initial.clone();
+            if let Some(prev_current) = &prev.current {
+                created.current.as_mut().unwrap().balance = prev_current.balance;
+                prev_incarnation = Some(prev_current.incarnation);
+            } else if let Some(prev_initial) = &prev.initial {
+                prev_incarnation = Some(prev_initial.incarnation);
+            }
+            self.journal
+                .push(Box::new(UpdateDelta::new(address, prev.clone())));
+        } else {
+            self.journal.push(Box::new(CreateDelta::new(address)));
+        }
+
+        if prev_incarnation.unwrap_or(0) == 0 {
+            // prev_incarnation = self.db.previous_incarnation(address);
+        }
+
+        // created.current->incarnation = *prev_incarnation + 1;
+
+        // objects_[address] = created;
+
+        // auto it{storage_.find(address)};
+        // if (it == storage_.end()) {
+        //     journal_.emplace_back(new state::StorageCreateDelta{address});
+        // } else {
+        //     journal_.emplace_back(new state::StorageWipeDelta{address, it->second});
+        //     storage_.erase(address);
+        // }
+
         todo!()
     }
 

@@ -1,10 +1,11 @@
-use super::{intra_block_state::IntraBlockState, object::Object, StateReader};
+use super::{intra_block_state::IntraBlockState, object::Object};
+use crate::StateBuffer;
 use derive_more::Constructor;
 use ethereum_types::Address;
 use std::fmt::Debug;
 
 /// Delta is a reversible change made to IntraBlockState.
-pub trait Delta<'storage, 'r, R: StateReader<'storage>>: Debug + Send + Sync {
+pub trait Delta<'storage, 'r, R: StateBuffer<'storage>>: Debug + Send + Sync {
     fn revert(self, _: &mut IntraBlockState<'storage, 'r, R>);
 }
 
@@ -13,7 +14,7 @@ pub struct CreateDelta {
     address: Address,
 }
 
-impl<'storage, 'r, R: StateReader<'storage>> Delta<'storage, 'r, R> for CreateDelta {
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for CreateDelta {
     fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
         state.objects.remove(&self.address);
     }
@@ -25,7 +26,7 @@ pub struct UpdateDelta {
     previous: Object,
 }
 
-impl<'storage, 'r, R: StateReader<'storage>> Delta<'storage, 'r, R> for UpdateDelta {
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for UpdateDelta {
     fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
         state.objects.insert(self.address, self.previous);
     }
@@ -36,7 +37,7 @@ pub struct SelfdestructDelta {
     address: Address,
 }
 
-impl<'storage, 'r, R: StateReader<'storage>> Delta<'storage, 'r, R> for SelfdestructDelta {
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for SelfdestructDelta {
     fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
         state.self_destructs.remove(&self.address);
     }
@@ -47,7 +48,7 @@ pub struct TouchDelta {
     address: Address,
 }
 
-impl<'storage, 'r, R: StateReader<'storage>> Delta<'storage, 'r, R> for TouchDelta {
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for TouchDelta {
     fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
         state.touched.remove(&self.address);
     }

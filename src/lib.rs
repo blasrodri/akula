@@ -25,6 +25,7 @@ pub mod downloader;
 pub mod etl;
 pub mod kv;
 mod models;
+pub mod node;
 pub mod stagedsync;
 pub mod stages;
 mod state;

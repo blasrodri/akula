@@ -1,4 +1,6 @@
-use crate::{changeset::*, common::*, dbutils, dbutils::*, kv::*, models::*, Cursor, Transaction};
+use crate::{
+    changeset::*, common::*, dbutils, dbutils::*, kv::*, models::*, state::*, Cursor, Transaction,
+};
 use arrayref::array_ref;
 use bytes::Bytes;
 use ethereum_types::H256;
@@ -138,9 +140,7 @@ mod tests {
     use crate::{
         bitmapdb, crypto,
         kv::traits::MutableKV,
-        state::database::{
-            PlainStateReader, PlainStateWriter, StateReader, StateWriter, WriterWithChangesets,
-        },
+        state::database::{PlainStateWriter, StateReader, StateWriter, WriterWithChangesets},
         txdb, MutableTransaction,
     };
     use pin_utils::pin_mut;
@@ -246,11 +246,7 @@ mod tests {
 
         for i in 0..num_of_accounts {
             let address = addrs[i];
-            let acc = PlainStateReader::new(&tx)
-                .read_account_data(address)
-                .await
-                .unwrap()
-                .unwrap();
+            let acc = read_account_data(&tx, address).await.unwrap().unwrap();
 
             assert_eq!(acc_state[i], acc);
 

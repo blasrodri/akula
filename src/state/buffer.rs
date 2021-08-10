@@ -1,60 +1,98 @@
-// use bytes::Bytes;
-// use ethereum_types::Address;
+use async_trait::async_trait;
+use bytes::Bytes;
+use ethereum::{Block, Header, Receipt};
+use ethereum_types::{Address, H256, U256};
 
-// #[async_trait]
-// pub trait StateBuffer {
-//     // Readers
+use crate::models::Account;
 
-//     async fn read_account(&self, address: Address) -> Option<Account>;
+#[async_trait]
+pub trait StateBuffer<'storage> {
+    // Readers
 
-//     async fn read_code(&self, code_hash: H256) -> Bytes;
+    async fn read_account(&self, address: Address) -> anyhow::Result<Option<Account>>;
 
-//     async fn read_storage(&self, address: Address, incarnation: u64, location: H256) -> H256;
+    async fn read_code(&self, code_hash: H256) -> anyhow::Result<Bytes<'storage>>;
 
-//     // Previous non-zero incarnation of an account; 0 if none exists.
-//     async fn previous_incarnation(&self, address: Address) -> u64;
+    async fn read_storage(
+        &self,
+        address: Address,
+        incarnation: u64,
+        location: H256,
+    ) -> anyhow::Result<H256>;
 
-//     async fn read_header(&self, block_number: u64, block_hash: H256) -> Option<BlockHeader>;
+    // Previous non-zero incarnation of an account; 0 if none exists.
+    async fn previous_incarnation(&self, address: Address) -> anyhow::Result<u64>;
 
-//     async fn read_body(&self, block_number: u64, block_hash: H256) -> Option<BlockBody>;
+    async fn read_header(
+        &self,
+        block_number: u64,
+        block_hash: H256,
+    ) -> anyhow::Result<Option<Header>>;
 
-//   virtual std::optional<intx::uint256> total_difficulty(uint64_t block_number,
-//                                                         const evmc::bytes32& block_hash) const noexcept = 0;
+    async fn read_body(
+        &self,
+        block_number: u64,
+        block_hash: H256,
+    ) -> anyhow::Result<Option<Block<ethereum::TransactionV2>>>;
 
-//   virtual evmc::bytes32 state_root_hash() const = 0;
+    async fn total_difficulty(
+        &self,
+        block_number: u64,
+        block_hash: H256,
+    ) -> anyhow::Result<Option<U256>>;
 
-//   virtual uint64_t current_canonical_block() const = 0;
+    async fn state_root_hash(&self) -> anyhow::Result<H256>;
 
-//   virtual std::optional<evmc::bytes32> canonical_hash(uint64_t block_number) const = 0;
+    async fn current_canonical_block(&self) -> anyhow::Result<u64>;
 
-//   ///@}
+    async fn canonical_hash(&self, block_number: u64) -> anyhow::Result<Option<H256>>;
 
-//   virtual void insert_block(const Block& block, const evmc::bytes32& hash) = 0;
+    async fn insert_block(
+        &mut self,
+        block: &Block<ethereum::TransactionV2>,
+        hash: H256,
+    ) -> anyhow::Result<()>;
 
-//   virtual void canonize_block(uint64_t block_number, const evmc::bytes32& block_hash) = 0;
+    async fn canonize_block(&mut self, block_number: u64, block_hash: H256) -> anyhow::Result<()>;
 
-//   virtual void decanonize_block(uint64_t block_number) = 0;
+    async fn decanonize_block(&mut self, block_number: u64) -> anyhow::Result<()>;
 
-//   virtual void insert_receipts(uint64_t block_number, const std::vector<Receipt>& receipts) = 0;
+    async fn insert_receipts(
+        &mut self,
+        block_number: u64,
+        receipts: &[Receipt],
+    ) -> anyhow::Result<()>;
 
-//   /** @name State changes
-//    *  Change sets are backward changes of the state, i.e. account/storage values <em>at the beginning of a block</em>.
-//    */
-//   ///@{
+    /// State changes
+    /// Change sets are backward changes of the state, i.e. account/storage values _at the beginning of a block_.
 
-//   /** Mark the beggining of a new block.
-//    * Must be called prior to calling update_account/update_account_code/update_storage.
-//    */
-//   virtual void begin_block(uint64_t block_number) = 0;
+    /// Mark the beggining of a new block.
+    /// Must be called prior to calling update_account/update_account_code/update_storage.
+    async fn begin_block(&mut self, block_number: u64) -> anyhow::Result<()>;
 
-//   virtual void update_account(const evmc::address& address, std::optional<Account> initial,
-//                               std::optional<Account> current) = 0;
+    async fn update_account(
+        &mut self,
+        address: Address,
+        initial: Option<Account>,
+        current: Option<Account>,
+    ) -> anyhow::Result<()>;
 
-//   virtual void update_account_code(const evmc::address& address, uint64_t incarnation, const evmc::bytes32& code_hash,
-//                                    ByteView code) = 0;
+    async fn update_account_code(
+        &mut self,
+        address: Address,
+        incarnation: u64,
+        code_hash: H256,
+        code: &[u8],
+    ) -> anyhow::Result<()>;
 
-//   virtual void update_storage(const evmc::address& address, uint64_t incarnation, const evmc::bytes32& location,
-//                               const evmc::bytes32& initial, const evmc::bytes32& current) = 0;
+    async fn update_storage(
+        &mut self,
+        address: Address,
+        incarnation: u64,
+        location: H256,
+        initial: H256,
+        current: H256,
+    ) -> anyhow::Result<()>;
 
-//   virtual void unwind_state_changes(uint64_t block_number) = 0;
-// }
+    async fn unwind_state_changes(&mut self, block_number: u64) -> anyhow::Result<()>;
+}

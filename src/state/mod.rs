@@ -5,4 +5,4 @@ mod history;
 mod intra_block_state;
 mod object;
 
-pub use self::{database::*, history::*, intra_block_state::*, object::*};
+pub use self::{buffer::*, database::*, history::*, intra_block_state::*, object::*};

@@ -2,9 +2,10 @@ use self::precompile::PrecompileSet;
 use crate::{
     accessors,
     models::NormalizedTransaction,
+    node::db::buffer::Buffer,
     stagedsync::stage::{ExecOutput, Stage, StageInput},
     state::IntraBlockState,
-    MutableTransaction, PlainStateReader, PlainStateWriter, StateReader, StateWriter,
+    MutableTransaction, PlainStateWriter, StateBuffer, StateReader, StateWriter,
 };
 use anyhow::bail;
 use async_trait::async_trait;
@@ -95,9 +96,10 @@ async fn execute_block<'db: 'tx, 'tx, RwTx: MutableTransaction<'db>>(
     }
 
     let w = PlainStateWriter::new(tx, block_number);
-    let r = PlainStateReader::new(tx);
 
-    let mut ibs = IntraBlockState::new(&r);
+    let state_buffer = Buffer::new(tx);
+
+    let mut ibs = IntraBlockState::new(&mut state_buffer);
 
     // let mut results = vec![];
     let mut gas_pool = block_header.gas_limit;
@@ -107,7 +109,7 @@ async fn execute_block<'db: 'tx, 'tx, RwTx: MutableTransaction<'db>>(
         validate_transaction(&mut ibs, &normalized_tx, sender, gas_pool).await?;
 
         let execution_result =
-            execute_transaction(&PrecompileSet::default(), &w, &r, normalized_tx, sender).await?;
+            execute_transaction(&PrecompileSet::default(), &w, &tx, normalized_tx, sender).await?;
 
         execution_result.gas_left;
     }
@@ -117,8 +119,8 @@ async fn execute_block<'db: 'tx, 'tx, RwTx: MutableTransaction<'db>>(
     Ok(receipts)
 }
 
-async fn validate_transaction<'storage, 'r, R: StateReader<'storage>>(
-    state: &mut IntraBlockState<'storage, 'r, R>,
+async fn validate_transaction<'storage, 'r, B: StateBuffer<'storage>>(
+    state: &mut IntraBlockState<'storage, 'r, B>,
     tx: &NormalizedTransaction,
     sender: Address,
     gas_pool: U256,
