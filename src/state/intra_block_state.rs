@@ -146,17 +146,15 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
     }
 
     pub async fn create_contract(&mut self, address: Address) -> anyhow::Result<()> {
-        let mut created = Object {
-            current: Some(Account::default()),
-            ..Default::default()
-        };
+        let mut current = Account::default();
+        let mut initial = None;
 
         let mut prev_incarnation: Option<u64> = None;
         self.journal.push({
             if let Some(prev) = get_object(self.db, &mut self.objects, address).await? {
-                created.initial = prev.initial.clone();
+                initial = prev.initial.clone();
                 if let Some(prev_current) = &prev.current {
-                    created.current.as_mut().unwrap().balance = prev_current.balance;
+                    current.balance = prev_current.balance;
                     prev_incarnation = Some(prev_current.incarnation);
                 } else if let Some(prev_initial) = &prev.initial {
                     prev_incarnation = Some(prev_initial.incarnation);
@@ -175,9 +173,15 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
             prev_incarnation = self.db.previous_incarnation(address).await?;
         }
 
-        created.current.as_mut().unwrap().incarnation = prev_incarnation + 1;
+        current.incarnation = prev_incarnation + 1;
 
-        self.objects.insert(address, created);
+        self.objects.insert(
+            address,
+            Object {
+                current: Some(current),
+                initial,
+            },
+        );
 
         if let Some(removed) = self.storage.remove(&address) {
             self.journal.push(Delta::StorageWipe {
@@ -379,8 +383,8 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
     pub fn access_storage(&mut self, address: Address, key: H256) -> AccessStatus {
         if self
             .accessed_storage_keys
-            .get_mut(&address)
-            .unwrap()
+            .entry(address)
+            .or_default()
             .insert(key)
         {
             self.journal.push(Delta::StorageAccess { address, key });
@@ -399,7 +403,7 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
     ) -> anyhow::Result<H256> {
         if let Some(obj) = get_object(self.db, &mut self.objects, address).await? {
             if let Some(current) = &obj.current {
-                let storage = self.storage.get_mut(&address).unwrap();
+                let storage = self.storage.entry(address).or_default();
 
                 if !original {
                     if let Some(v) = storage.current.get(&key) {
@@ -419,16 +423,13 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
 
                 let val = self.db.read_storage(address, incarnation, key).await?;
 
-                *self
-                    .storage
-                    .get_mut(&address)
-                    .unwrap()
-                    .committed
-                    .get_mut(&key)
-                    .unwrap() = CommittedValue {
-                    initial: val,
-                    original: val,
-                };
+                self.storage.entry(address).or_default().committed.insert(
+                    key,
+                    CommittedValue {
+                        initial: val,
+                        original: val,
+                    },
+                );
 
                 return Ok(val);
             }
@@ -465,10 +466,11 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
             return Ok(());
         }
         self.storage
-            .get_mut(&address)
-            .unwrap()
+            .entry(address)
+            .or_default()
             .current
             .insert(key, value);
+
         self.journal.push(Delta::StorageChange {
             address,
             key,
@@ -539,7 +541,7 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
     pub fn finalize_transaction(&mut self) {
         for storage in self.storage.values_mut() {
             for (key, val) in &storage.current {
-                storage.committed.get_mut(key).unwrap().original = *val;
+                storage.committed.entry(*key).or_default().original = *val;
             }
             storage.current.clear();
         }

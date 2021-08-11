@@ -8,7 +8,7 @@ pub struct Object {
     pub current: Option<Account>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CommittedValue {
     /// Value at the begining of the block
     pub initial: H256,
@@ -16,7 +16,7 @@ pub struct CommittedValue {
     pub original: H256,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Storage {
     pub committed: HashMap<H256, CommittedValue>,
     pub current: HashMap<H256, H256>,

@@ -1,6 +1,5 @@
 use super::{intra_block_state::IntraBlockState, object::Object};
 use crate::{StateBuffer, Storage};
-use derive_more::Constructor;
 use ethereum_types::{Address, H256};
 use std::fmt::Debug;
 
@@ -67,8 +66,8 @@ impl Delta {
             } => {
                 state
                     .storage
-                    .get_mut(&address)
-                    .unwrap()
+                    .entry(address)
+                    .or_default()
                     .current
                     .insert(key, previous);
             }
@@ -81,8 +80,8 @@ impl Delta {
             Delta::StorageAccess { address, key } => {
                 state
                     .accessed_storage_keys
-                    .get_mut(&address)
-                    .unwrap()
+                    .entry(address)
+                    .or_default()
                     .remove(&key);
             }
             Delta::AccountAccess { address } => {
