@@ -182,7 +182,7 @@ where
         address: Address,
         incarnation: u64,
         code_hash: H256,
-        code: &[u8],
+        code: Bytes<'tx>,
     ) -> anyhow::Result<()> {
         todo!()
     }

@@ -22,8 +22,8 @@ impl BlockNumber {
     }
 }
 
-pub fn hash_data(data: &[u8]) -> Hash {
-    Hash::from_slice(&Keccak256::digest(data)[..])
+pub fn hash_data(data: impl AsRef<[u8]>) -> Hash {
+    Hash::from_slice(&Keccak256::digest(data.as_ref())[..])
 }
 
 #[allow(non_upper_case_globals)]

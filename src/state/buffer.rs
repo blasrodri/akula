@@ -82,7 +82,7 @@ pub trait StateBuffer<'storage> {
         address: Address,
         incarnation: u64,
         code_hash: H256,
-        code: &[u8],
+        code: Bytes<'storage>,
     ) -> anyhow::Result<()>;
 
     async fn update_storage(

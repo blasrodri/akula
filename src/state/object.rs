@@ -10,9 +10,9 @@ pub struct Object {
 
 #[derive(Debug)]
 pub struct CommittedValue {
-    /// value at the begining of the block
+    /// Value at the begining of the block
     pub initial: H256,
-    // value at the begining of the transaction; see EIP-2200
+    /// Value at the begining of the transaction; see EIP-2200
     pub original: H256,
 }
 
