@@ -1,7 +1,7 @@
 use super::{intra_block_state::IntraBlockState, object::Object};
-use crate::StateBuffer;
+use crate::{StateBuffer, Storage};
 use derive_more::Constructor;
-use ethereum_types::Address;
+use ethereum_types::{Address, H256};
 use std::fmt::Debug;
 
 /// Delta is a reversible change made to IntraBlockState.
@@ -51,5 +51,73 @@ pub struct TouchDelta {
 impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for TouchDelta {
     fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
         state.touched.remove(&self.address);
+    }
+}
+
+#[derive(Constructor, Debug)]
+pub struct StorageChangeDelta {
+    address: Address,
+    key: H256,
+    previous: H256,
+}
+
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for StorageChangeDelta {
+    fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
+        state
+            .storage
+            .get_mut(&self.address)
+            .unwrap()
+            .current
+            .insert(self.key, self.previous);
+    }
+}
+
+#[derive(Constructor, Debug)]
+pub struct StorageWipeDelta {
+    address: Address,
+    storage: Storage,
+}
+
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for StorageWipeDelta {
+    fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
+        state.storage.insert(self.address, self.storage);
+    }
+}
+
+#[derive(Constructor, Debug)]
+pub struct StorageCreateDelta {
+    address: Address,
+}
+
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for StorageCreateDelta {
+    fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
+        state.storage.remove(&self.address);
+    }
+}
+
+#[derive(Constructor, Debug)]
+pub struct StorageAccessDelta {
+    address: Address,
+    key: H256,
+}
+
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for StorageAccessDelta {
+    fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
+        state
+            .accessed_storage_keys
+            .get_mut(&self.address)
+            .unwrap()
+            .remove(&self.key);
+    }
+}
+
+#[derive(Constructor, Debug)]
+pub struct AccountAccessDelta {
+    address: Address,
+}
+
+impl<'storage, 'r, R: StateBuffer<'storage>> Delta<'storage, 'r, R> for AccountAccessDelta {
+    fn revert(self, state: &mut IntraBlockState<'storage, 'r, R>) {
+        state.accessed_addresses.remove(&self.address);
     }
 }

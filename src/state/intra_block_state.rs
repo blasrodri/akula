@@ -1,9 +1,9 @@
-use crate::{common::EMPTY_HASH, models::Account};
-
 use super::{delta::*, object::*, *};
+use crate::{common::EMPTY_HASH, models::Account};
 use bytes::Bytes;
 use ethereum::Log;
 use ethereum_types::*;
+use hex_literal::hex;
 use std::collections::*;
 
 #[derive(Debug)]
@@ -33,7 +33,7 @@ where
 }
 
 async fn get_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
-    db: &'r R,
+    db: &R,
     objects: &'m mut HashMap<Address, Object>,
     address: Address,
 ) -> anyhow::Result<Option<&'m mut Object>> {
@@ -55,7 +55,7 @@ async fn get_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
 }
 
 async fn ensure_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
-    db: &'r mut R,
+    db: &R,
     objects: &'m mut HashMap<Address, Object>,
     journal: &mut Vec<Box<dyn Delta<'storage, 'r, R>>>,
     address: Address,
@@ -77,7 +77,7 @@ async fn ensure_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
 }
 
 async fn get_or_create_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
-    db: &'r mut R,
+    db: &R,
     objects: &'m mut HashMap<Address, Object>,
     journal: &mut Vec<Box<dyn Delta<'storage, 'r, R>>>,
     address: Address,
@@ -153,32 +153,63 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
             self.journal.push(Box::new(CreateDelta::new(address)));
         }
 
-        if prev_incarnation.unwrap_or(0) == 0 {
-            // prev_incarnation = self.db.previous_incarnation(address);
+        let mut prev_incarnation = prev_incarnation.unwrap_or(0);
+        if prev_incarnation == 0 {
+            prev_incarnation = self.db.previous_incarnation(address).await?;
         }
 
-        // created.current->incarnation = *prev_incarnation + 1;
+        created.current.as_mut().unwrap().incarnation = prev_incarnation + 1;
 
-        // objects_[address] = created;
+        self.objects.insert(address, created);
 
-        // auto it{storage_.find(address)};
-        // if (it == storage_.end()) {
-        //     journal_.emplace_back(new state::StorageCreateDelta{address});
-        // } else {
-        //     journal_.emplace_back(new state::StorageWipeDelta{address, it->second});
-        //     storage_.erase(address);
-        // }
+        if let Some(removed) = self.storage.remove(&address) {
+            self.journal
+                .push(Box::new(StorageWipeDelta::new(address, removed)));
+        } else {
+            self.journal
+                .push(Box::new(StorageCreateDelta::new(address)));
+        }
 
-        todo!()
+        Ok(())
     }
 
-    // void destruct(const evmc::address& address);
+    pub async fn destruct(&mut self, address: Address) -> anyhow::Result<()> {
+        // Doesn't create a delta since it's called at the end of a transcation,
+        // when we don't need snapshots anymore.
 
-    // void record_suicide(const evmc::address& address) noexcept;
-    // void destruct_suicides();
-    // void destruct_touched_dead();
+        self.storage.remove(&address);
+        if let Some(obj) = get_object(self.db, &mut self.objects, address).await? {
+            obj.current = None;
+        }
 
-    // size_t number_of_self_destructs() const noexcept { return self_destructs_.size(); }
+        Ok(())
+    }
+
+    pub async fn record_selfdestruct(&mut self, address: Address) {
+        if self.self_destructs.insert(address) {
+            self.journal.push(Box::new(SelfdestructDelta::new(address)));
+        }
+    }
+    pub async fn destruct_selfdestructs(&mut self) -> anyhow::Result<()> {
+        for address in self.self_destructs.iter().copied().collect::<Vec<_>>() {
+            self.destruct(address).await?;
+        }
+
+        Ok(())
+    }
+    pub async fn destruct_touched_dead(&mut self) -> anyhow::Result<()> {
+        for address in self.touched.iter().copied().collect::<Vec<_>>() {
+            if self.is_dead(address).await? {
+                self.destruct(address).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn number_of_self_destructs(&self) -> usize {
+        self.self_destructs.len()
+    }
 
     pub async fn get_balance(&mut self, address: Address) -> anyhow::Result<U256> {
         Ok(get_object(self.db, &mut self.objects, address)
@@ -187,11 +218,50 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
             .flatten()
             .unwrap_or_else(U256::zero))
     }
-    // void set_balance(const evmc::address& address, const intx::uint256& value) noexcept;
-    // void add_to_balance(const evmc::address& address, const intx::uint256& addend) noexcept;
-    // void subtract_from_balance(const evmc::address& address, const intx::uint256& subtrahend) noexcept;
+    pub async fn set_balance(&mut self, address: Address, value: U256) -> anyhow::Result<()> {
+        let obj =
+            get_or_create_object(self.db, &mut self.objects, &mut self.journal, address).await?;
+        self.journal
+            .push(Box::new(UpdateDelta::new(address, obj.clone())));
+        obj.current.as_mut().unwrap().balance = value;
+        self.touch(address);
 
-    // void touch(const evmc::address& address) noexcept;
+        Ok(())
+    }
+    pub async fn add_to_balance(&mut self, address: Address, addend: U256) -> anyhow::Result<()> {
+        let obj =
+            get_or_create_object(self.db, &mut self.objects, &mut self.journal, address).await?;
+        self.journal
+            .push(Box::new(UpdateDelta::new(address, obj.clone())));
+        obj.current.as_mut().unwrap().balance += addend;
+        self.touch(address);
+
+        Ok(())
+    }
+    pub async fn subtract_from_balance(
+        &mut self,
+        address: Address,
+        subtrahend: U256,
+    ) -> anyhow::Result<()> {
+        let obj =
+            get_or_create_object(self.db, &mut self.objects, &mut self.journal, address).await?;
+        self.journal
+            .push(Box::new(UpdateDelta::new(address, obj.clone())));
+        obj.current.as_mut().unwrap().balance -= subtrahend;
+        self.touch(address);
+
+        Ok(())
+    }
+
+    pub fn touch(&mut self, address: Address) {
+        let inserted = self.touched.insert(address);
+
+        // See Yellow Paper, Appendix K "Anomalies on the Main Network"
+        const RIPEMD_ADDRESS: Address = H160(hex!("0000000000000000000000000000000000000003"));
+        if inserted && address != RIPEMD_ADDRESS {
+            self.journal.push(Box::new(TouchDelta::new(address)));
+        }
+    }
 
     pub async fn get_nonce(&mut self, address: Address) -> anyhow::Result<u64> {
         if let Some(object) = get_object(self.db, &mut self.objects, address).await? {
@@ -208,12 +278,35 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
         self.journal
             .push(Box::new(UpdateDelta::new(address, object.clone())));
 
-        object.current.as_mut().unwrap().nonce = 0;
+        object.current.as_mut().unwrap().nonce = nonce;
 
         Ok(())
     }
 
-    // ByteView get_code(const evmc::address& address) const noexcept;
+    pub async fn get_code(&mut self, address: Address) -> anyhow::Result<Option<Bytes<'storage>>> {
+        let obj = get_object(self.db, &mut self.objects, address).await?;
+
+        if let Some(obj) = obj {
+            if let Some(current) = &obj.current {
+                let code_hash = current.code_hash;
+                if code_hash != EMPTY_HASH {
+                    if let Some(code) = self.new_code.get(&code_hash) {
+                        return Ok(Some(code.clone()));
+                    }
+
+                    if let Some(code) = self.existing_code.get(&code_hash) {
+                        return Ok(Some(code.clone()));
+                    }
+
+                    let code = self.db.read_code(code_hash).await?;
+                    self.existing_code.insert(code_hash, code.clone());
+                    return Ok(Some(code));
+                }
+            }
+        }
+
+        Ok(None)
+    }
     // evmc::bytes32 get_code_hash(const evmc::address& address) const noexcept;
     // void set_code(const evmc::address& address, Bytes code) noexcept;
 
