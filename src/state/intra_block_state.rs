@@ -11,7 +11,7 @@ pub struct IntraBlockState<'storage, 'r, R>
 where
     R: StateBuffer<'storage>,
 {
-    db: &'r R,
+    db: &'r mut R,
 
     pub(crate) objects: HashMap<Address, Object>,
     pub(crate) storage: HashMap<Address, Storage>,
@@ -32,7 +32,7 @@ where
     pub(crate) accessed_storage_keys: HashMap<Address, HashSet<H256>>,
 }
 
-async fn get_object<'m, 'storage, 'r, R: StateReader<'storage>>(
+async fn get_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
     db: &'r R,
     objects: &'m mut HashMap<Address, Object>,
     address: Address,
@@ -40,7 +40,7 @@ async fn get_object<'m, 'storage, 'r, R: StateReader<'storage>>(
     Ok(match objects.entry(address) {
         hash_map::Entry::Occupied(entry) => Some(entry.into_mut()),
         hash_map::Entry::Vacant(entry) => {
-            let accdata = db.read_account_data(address).await?;
+            let accdata = db.read_account(address).await?;
 
             if let Some(account) = accdata {
                 Some(entry.insert(Object {
@@ -54,8 +54,8 @@ async fn get_object<'m, 'storage, 'r, R: StateReader<'storage>>(
     })
 }
 
-async fn ensure_object<'m, 'storage, 'r, R: StateReader<'storage>>(
-    db: &'r R,
+async fn ensure_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
+    db: &'r mut R,
     objects: &'m mut HashMap<Address, Object>,
     journal: &mut Vec<Box<dyn Delta<'storage, 'r, R>>>,
     address: Address,
@@ -76,8 +76,8 @@ async fn ensure_object<'m, 'storage, 'r, R: StateReader<'storage>>(
     Ok(())
 }
 
-async fn get_or_create_object<'m, 'storage, 'r, R: StateReader<'storage>>(
-    db: &'r R,
+async fn get_or_create_object<'m, 'storage, 'r, R: StateBuffer<'storage>>(
+    db: &'r mut R,
     objects: &'m mut HashMap<Address, Object>,
     journal: &mut Vec<Box<dyn Delta<'storage, 'r, R>>>,
     address: Address,
@@ -87,7 +87,7 @@ async fn get_or_create_object<'m, 'storage, 'r, R: StateReader<'storage>>(
 }
 
 impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
-    pub fn new(db: &'r R) -> Self {
+    pub fn new(db: &'r mut R) -> Self {
         Self {
             db,
             objects: Default::default(),
@@ -102,10 +102,6 @@ impl<'storage, 'r, R: StateBuffer<'storage>> IntraBlockState<'storage, 'r, R> {
             accessed_addresses: Default::default(),
             accessed_storage_keys: Default::default(),
         }
-    }
-
-    pub fn db(&self) -> &'r R {
-        self.db
     }
 
     pub async fn exists(&mut self, address: Address) -> anyhow::Result<bool> {

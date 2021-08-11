@@ -97,7 +97,7 @@ async fn execute_block<'db: 'tx, 'tx, RwTx: MutableTransaction<'db>>(
 
     let w = PlainStateWriter::new(tx, block_number);
 
-    let state_buffer = Buffer::new(tx);
+    let mut state_buffer = Buffer::new(tx);
 
     let mut ibs = IntraBlockState::new(&mut state_buffer);
 
@@ -108,8 +108,7 @@ async fn execute_block<'db: 'tx, 'tx, RwTx: MutableTransaction<'db>>(
 
         validate_transaction(&mut ibs, &normalized_tx, sender, gas_pool).await?;
 
-        let execution_result =
-            execute_transaction(&PrecompileSet::default(), &w, &tx, normalized_tx, sender).await?;
+        let execution_result = execute_transaction(&mut ibs, normalized_tx, sender).await?;
 
         execution_result.gas_left;
     }
@@ -147,10 +146,8 @@ async fn validate_transaction<'storage, 'r, B: StateBuffer<'storage>>(
     Ok(())
 }
 
-async fn execute_transaction<'storage>(
-    precompile_set: &PrecompileSet,
-    w: &impl StateWriter,
-    r: &impl StateReader<'storage>,
+async fn execute_transaction<'storage, 'r, R: StateBuffer<'storage>>(
+    ibs: &mut IntraBlockState<'storage, 'r, R>,
     tx: NormalizedTransaction,
     sender: H160,
 ) -> anyhow::Result<Output> {
